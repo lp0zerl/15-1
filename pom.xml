@@ -6,7 +6,7 @@
 	<modelVersion>4.0.0</modelVersion>
 
 	<groupId>ru.example</groupId>
-	<artifactId>student-faculty-app</artifactId>
+	<artifactId>hogwarts-school</artifactId>
 	<version>1.0.0</version>
 	<packaging>jar</packaging>
 
@@ -38,6 +38,13 @@
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
+		</dependency>
+
+		<!-- Swagger -->
+		<dependency>
+			<groupId>io.springfox</groupId>
+			<artifactId>springfox-boot-starter</artifactId>
+			<version>3.0.0</version>
 		</dependency>
 
 		<dependency>
