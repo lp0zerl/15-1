@@ -1,13 +1,15 @@
-package ru.hogwarts.school;
+@Repository
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+@Component
+
+@Component
+
+@RestController
+
+@Configuration
 
 @SpringBootApplication
-public class SchoolApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(SchoolApplication.class, args);
-	}
+@ExtendWith(MockitoExtension.class)
 
-}
+@ExtendWith(MockitoExtension.class)
