@@ -45,7 +45,6 @@ public class RecommendationApplication {
         SpringApplication.run(RecommendationApplication.class, args);
         System.out.println("🚀 Приложение запущено на http://localhost:8080");
         System.out.println("📚 Swagger UI: http://localhost:8080/swagger-ui.html");
-        System.out.println("🐘 PostgreSQL: jdbc:postgresql://localhost:5432/recommendation_db");
     }
 
     @Bean
@@ -87,20 +86,88 @@ class AppConstants {
 
     // Типы транзакций
     public static final List<String> TRANSACTION_TYPES = Arrays.asList("DEPOSIT", "WITHDRAW");
-
-    // Типы запросов правил
-    public static final List<String> QUERY_TYPES = Arrays.asList(
-            "USER_OF", "ACTIVE_USER_OF",
-            "TRANSACTION_SUM_COMPARE", "TRANSACTION_SUM_COMPARE_DEPOSIT_WITHDRAW"
-    );
-
-    // Операторы сравнения
-    public static final List<String> COMPARISON_OPERATORS = Arrays.asList(">", "<", "=", ">=", "<=");
 }
 
-// ==================== 3. СУЩНОСТИ (ENTITIES) ====================
+// ==================== 3. НАСТРОЙКА SPRING SECURITY ====================
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.JdbcUserDetailsManager;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.access.AccessDeniedException;
+import javax.sql.DataSource;
 
-// Пользователь
+@Configuration
+@EnableWebSecurity
+@EnableGlobalMethodSecurity(prePostEnabled = true)
+class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+                .csrf().disable()
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                .antMatchers("/api/v1/auth/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                .antMatchers("/api/v1/products/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/api/v1/users/**").hasAnyRole("USER", "ADMIN")
+                .antMatchers(HttpMethod.POST, "/api/v1/users/**").hasAnyRole("USER", "ADMIN")
+                .antMatchers(HttpMethod.PUT, "/api/v1/users/**").hasAnyRole("USER", "ADMIN")
+                .antMatchers(HttpMethod.DELETE, "/api/v1/users/**").hasRole("ADMIN")
+                .antMatchers("/api/v1/transactions/**").hasAnyRole("USER", "ADMIN")
+                .antMatchers("/api/v1/rules/**").hasRole("ADMIN")
+                .antMatchers("/api/v1/recommendations/**").hasAnyRole("USER", "ADMIN")
+                .anyRequest().authenticated()
+                .and()
+                .httpBasic();
+
+        return http.build();
+    }
+
+    @Bean
+    public JdbcUserDetailsManager userDetailsManager(DataSource dataSource) {
+        JdbcUserDetailsManager manager = new JdbcUserDetailsManager(dataSource);
+
+        // Используем кастомные запросы для нашей структуры БД
+        manager.setUsersByUsernameQuery(
+                "SELECT email as username, password, enabled FROM users WHERE email = ?");
+        manager.setAuthoritiesByUsernameQuery(
+                "SELECT email as username, 'ROLE_' || UPPER(role) as authority FROM users WHERE email = ?");
+
+        return manager;
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration authConfig) throws Exception {
+        return authConfig.getAuthenticationManager();
+    }
+}
+
+// ==================== 4. СУЩНОСТИ (ENTITIES) ====================
+
+// Пользователь (добавляем поля для Spring Security)
 @Entity
 @Table(name = "users", indexes = {
         @Index(name = "idx_user_email", columnList = "email", unique = true),
@@ -120,8 +187,17 @@ class UserEntity {
     @Column(name = "email", nullable = false, unique = true, length = 100)
     private String email;
 
+    @Column(name = "password", nullable = false, length = 255)
+    private String password;
+
     @Column(name = "phone", length = 20)
     private String phone;
+
+    @Column(name = "role", nullable = false, length = 20)
+    private String role = "USER";
+
+    @Column(name = "enabled", nullable = false)
+    private boolean enabled = true;
 
     @Column(name = "registration_date", nullable = false)
     private LocalDateTime registrationDate;
@@ -149,8 +225,14 @@ class UserEntity {
     public void setLastName(String lastName) { this.lastName = lastName; }
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
     public String getPhone() { return phone; }
     public void setPhone(String phone) { this.phone = phone; }
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public LocalDateTime getRegistrationDate() { return registrationDate; }
     public void setRegistrationDate(LocalDateTime registrationDate) { this.registrationDate = registrationDate; }
     public boolean isActive() { return active; }
@@ -501,7 +583,7 @@ class RecommendationEntity {
     public void setViewedDate(LocalDateTime viewedDate) { this.viewedDate = viewedDate; }
 }
 
-// ==================== 4. DTO КЛАССЫ ====================
+// ==================== 5. DTO КЛАССЫ ====================
 
 // Базовый ответ
 @Schema(description = "Базовый ответ API")
@@ -585,21 +667,67 @@ class DataResponseDto<T> extends BaseResponseDto {
     public void setData(T data) { this.data = data; }
 }
 
-// ID ответ
-@Schema(description = "Ответ с ID созданного ресурса")
-class IdResponseDto {
-    @Schema(description = "ID ресурса", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull
-    private Long id;
+// Регистрация пользователя
+@Schema(description = "Запрос на регистрацию")
+class RegisterRequestDto {
+    @Schema(description = "Имя", example = "Иван", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "Имя не может быть пустым")
+    @Size(min = 1, max = 50, message = "Имя должно быть от 1 до 50 символов")
+    private String firstName;
 
-    public IdResponseDto() {}
+    @Schema(description = "Фамилия", example = "Иванов", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "Фамилия не может быть пустой")
+    @Size(min = 1, max = 50, message = "Фамилия должна быть от 1 до 50 символов")
+    private String lastName;
 
-    public IdResponseDto(Long id) {
-        this.id = id;
-    }
+    @Schema(description = "Email", example = "ivan@example.com", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "Email не может быть пустым")
+    @Email(message = "Некорректный формат email")
+    @Size(max = 100, message = "Email должен быть до 100 символов")
+    private String email;
 
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
+    @Schema(description = "Пароль", example = "password123", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "Пароль не может быть пустым")
+    @Size(min = 6, message = "Пароль должен быть не менее 6 символов")
+    private String password;
+
+    @Schema(description = "Телефон", example = "+79991234567")
+    @Pattern(regexp = "^\\+?[1-9]\\d{1,14}$", message = "Некорректный формат телефона")
+    private String phone;
+
+    @Schema(description = "Роль", example = "USER")
+    private String role = "USER";
+
+    public String getFirstName() { return firstName; }
+    public void setFirstName(String firstName) { this.firstName = firstName; }
+    public String getLastName() { return lastName; }
+    public void setLastName(String lastName) { this.lastName = lastName; }
+    public String getEmail() { return email; }
+    public void setEmail(String email) { this.email = email; }
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
+    public String getPhone() { return phone; }
+    public void setPhone(String phone) { this.phone = phone; }
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
+}
+
+// Смена пароля
+@Schema(description = "Запрос на смену пароля")
+class ChangePasswordRequestDto {
+    @Schema(description = "Текущий пароль", example = "oldPassword123", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "Текущий пароль не может быть пустым")
+    private String currentPassword;
+
+    @Schema(description = "Новый пароль", example = "newPassword123", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "Новый пароль не может быть пустым")
+    @Size(min = 6, message = "Новый пароль должен быть не менее 6 символов")
+    private String newPassword;
+
+    public String getCurrentPassword() { return currentPassword; }
+    public void setCurrentPassword(String currentPassword) { this.currentPassword = currentPassword; }
+    public String getNewPassword() { return newPassword; }
+    public void setNewPassword(String newPassword) { this.newPassword = newPassword; }
 }
 
 // Пользователь DTO
@@ -629,6 +757,9 @@ class UserDto {
     @Pattern(regexp = "^\\+?[1-9]\\d{1,14}$", message = "Некорректный формат телефона")
     private String phone;
 
+    @Schema(description = "Роль", example = "USER")
+    private String role = "USER";
+
     @Schema(description = "Дата регистрации", example = "2023-01-15T10:30:00")
     private LocalDateTime registrationDate;
 
@@ -647,6 +778,8 @@ class UserDto {
     public void setEmail(String email) { this.email = email; }
     public String getPhone() { return phone; }
     public void setPhone(String phone) { this.phone = phone; }
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
     public LocalDateTime getRegistrationDate() { return registrationDate; }
     public void setRegistrationDate(LocalDateTime registrationDate) { this.registrationDate = registrationDate; }
     public boolean isActive() { return active; }
@@ -655,44 +788,6 @@ class UserDto {
     public String getFullName() {
         return firstName + " " + lastName;
     }
-}
-
-// Запрос пользователя
-@Schema(description = "Запрос на создание/обновление пользователя")
-class UserRequestDto {
-    @Schema(description = "Имя", example = "Иван", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Имя не может быть пустым")
-    @Size(min = 1, max = 50, message = "Имя должно быть от 1 до 50 символов")
-    private String firstName;
-
-    @Schema(description = "Фамилия", example = "Иванов", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Фамилия не может быть пустой")
-    @Size(min = 1, max = 50, message = "Фамилия должна быть от 1 до 50 символов")
-    private String lastName;
-
-    @Schema(description = "Email", example = "ivan@example.com", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Email не может быть пустым")
-    @Email(message = "Некорректный формат email")
-    @Size(max = 100, message = "Email должен быть до 100 символов")
-    private String email;
-
-    @Schema(description = "Телефон", example = "+79991234567")
-    @Pattern(regexp = "^\\+?[1-9]\\d{1,14}$", message = "Некорректный формат телефона")
-    private String phone;
-
-    @Schema(description = "Активен", example = "true")
-    private boolean active = true;
-
-    public String getFirstName() { return firstName; }
-    public void setFirstName(String firstName) { this.firstName = firstName; }
-    public String getLastName() { return lastName; }
-    public void setLastName(String lastName) { this.lastName = lastName; }
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-    public String getPhone() { return phone; }
-    public void setPhone(String phone) { this.phone = phone; }
-    public boolean isActive() { return active; }
-    public void setActive(boolean active) { this.active = active; }
 }
 
 // Продукт DTO
@@ -748,48 +843,6 @@ class ProductDto {
     public void setActive(boolean active) { this.active = active; }
     public LocalDateTime getCreatedDate() { return createdDate; }
     public void setCreatedDate(LocalDateTime createdDate) { this.createdDate = createdDate; }
-}
-
-// Запрос продукта
-@Schema(description = "Запрос на создание/обновление продукта")
-class ProductRequestDto {
-    @Schema(description = "Название", example = "Премиальная кредитная карта", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Название не может быть пустым")
-    @Size(min = 1, max = 100, message = "Название должно быть от 1 до 100 символов")
-    private String name;
-
-    @Schema(description = "Тип", example = "CREDIT", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Тип не может быть пустым")
-    @Pattern(regexp = "DEBIT|CREDIT|INVEST|SAVING", message = "Тип должен быть одним из: DEBIT, CREDIT, INVEST, SAVING")
-    private String type;
-
-    @Schema(description = "Описание", example = "Премиальная карта с кэшбэком")
-    @Size(max = 500, message = "Описание должно быть до 500 символов")
-    private String description;
-
-    @Schema(description = "Минимальный баланс", example = "1000.00")
-    @DecimalMin(value = "0.00", inclusive = true, message = "Минимальный баланс не может быть отрицательным")
-    private BigDecimal minBalance;
-
-    @Schema(description = "Процентная ставка", example = "5.5")
-    @DecimalMin(value = "0.00", inclusive = true, message = "Процентная ставка не может быть отрицательной")
-    private BigDecimal interestRate;
-
-    @Schema(description = "Активен", example = "true")
-    private boolean active = true;
-
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-    public String getType() { return type; }
-    public void setType(String type) { this.type = type; }
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
-    public BigDecimal getMinBalance() { return minBalance; }
-    public void setMinBalance(BigDecimal minBalance) { this.minBalance = minBalance; }
-    public BigDecimal getInterestRate() { return interestRate; }
-    public void setInterestRate(BigDecimal interestRate) { this.interestRate = interestRate; }
-    public boolean isActive() { return active; }
-    public void setActive(boolean active) { this.active = active; }
 }
 
 // Транзакция DTO
@@ -848,74 +901,6 @@ class TransactionDto {
     public void setStatus(String status) { this.status = status; }
 }
 
-// Запрос транзакции
-@Schema(description = "Запрос на создание транзакции")
-class TransactionRequestDto {
-    @Schema(description = "ID пользователя", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "ID пользователя не может быть пустым")
-    private Long userId;
-
-    @Schema(description = "ID продукта", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "ID продукта не может быть пустым")
-    private Long productId;
-
-    @Schema(description = "Тип", example = "DEPOSIT", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Тип не может быть пустым")
-    @Pattern(regexp = "DEPOSIT|WITHDRAW", message = "Тип должен быть DEPOSIT или WITHDRAW")
-    private String type;
-
-    @Schema(description = "Сумма", example = "1000.50", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "Сумма не может быть пустой")
-    @DecimalMin(value = "0.01", message = "Сумма должна быть больше 0")
-    private BigDecimal amount;
-
-    @Schema(description = "Описание", example = "Зачисление зарплаты")
-    @Size(max = 200, message = "Описание должно быть до 200 символов")
-    private String description;
-
-    public Long getUserId() { return userId; }
-    public void setUserId(Long userId) { this.userId = userId; }
-    public Long getProductId() { return productId; }
-    public void setProductId(Long productId) { this.productId = productId; }
-    public String getType() { return type; }
-    public void setType(String type) { this.type = type; }
-    public BigDecimal getAmount() { return amount; }
-    public void setAmount(BigDecimal amount) { this.amount = amount; }
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
-}
-
-// Запрос правила DTO
-@Schema(description = "Компонент запроса правила")
-class RuleQueryDto {
-    @Schema(description = "Тип запроса", example = "USER_OF", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Тип запроса не может быть пустым")
-    private String query;
-
-    @Schema(description = "Аргументы", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "Аргументы не могут быть пустыми")
-    @Size(min = 1, message = "Должен быть хотя бы один аргумент")
-    private List<String> arguments;
-
-    @Schema(description = "Отрицание", example = "false", requiredMode = Schema.RequiredMode.REQUIRED)
-    private boolean negate = false;
-
-    public RuleQueryDto() {}
-
-    public RuleQueryDto(String query, List<String> arguments, boolean negate) {
-        this.query = query;
-        this.arguments = arguments;
-        this.negate = negate;
-    }
-
-    public String getQuery() { return query; }
-    public void setQuery(String query) { this.query = query; }
-    public List<String> getArguments() { return arguments; }
-    public void setArguments(List<String> arguments) { this.arguments = arguments; }
-    public boolean isNegate() { return negate; }
-    public void setNegate(boolean negate) { this.negate = negate; }
-}
-
 // Правило DTO
 @Schema(description = "Правило рекомендации")
 class RuleDto {
@@ -937,11 +922,6 @@ class RuleDto {
     @Size(min = 1, max = 500, message = "Текст рекомендации должен быть от 1 до 500 символов")
     private String productText;
 
-    @Schema(description = "Запросы правила", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "Запросы правила не могут быть пустыми")
-    @Size(min = 1, message = "Должен быть хотя бы один запрос")
-    private List<RuleQueryDto> rule;
-
     @Schema(description = "Активно", example = "true")
     private boolean active = true;
 
@@ -958,113 +938,19 @@ class RuleDto {
     public void setProductId(Long productId) { this.productId = productId; }
     public String getProductText() { return productText; }
     public void setProductText(String productText) { this.productText = productText; }
-    public List<RuleQueryDto> getRule() { return rule; }
-    public void setRule(List<RuleQueryDto> rule) { this.rule = rule; }
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
     public LocalDateTime getCreatedDate() { return createdDate; }
     public void setCreatedDate(LocalDateTime createdDate) { this.createdDate = createdDate; }
 }
 
-// Запрос создания правила
-@Schema(description = "Запрос на создание правила")
-class RuleRequestDto {
-    @Schema(description = "Название продукта", example = "Простой кредит", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Название продукта не может быть пустым")
-    @Size(min = 1, max = 100, message = "Название продукта должно быть от 1 до 100 символов")
-    private String productName;
-
-    @Schema(description = "ID продукта", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "ID продукта не может быть пустым")
-    private Long productId;
-
-    @Schema(description = "Текст рекомендации", example = "Рекомендуем простой кредит на выгодных условиях", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "Текст рекомендации не может быть пустым")
-    @Size(min = 1, max = 500, message = "Текст рекомендации должен быть от 1 до 500 символов")
-    private String productText;
-
-    @Schema(description = "Запросы правила", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull(message = "Запросы правила не могут быть пустыми")
-    @Size(min = 1, message = "Должен быть хотя бы один запрос")
-    private List<RuleQueryDto> rule;
-
-    public String getProductName() { return productName; }
-    public void setProductName(String productName) { this.productName = productName; }
-    public Long getProductId() { return productId; }
-    public void setProductId(Long productId) { this.productId = productId; }
-    public String getProductText() { return productText; }
-    public void setProductText(String productText) { this.productText = productText; }
-    public List<RuleQueryDto> getRule() { return rule; }
-    public void setRule(List<RuleQueryDto> rule) { this.rule = rule; }
-}
-
-// Ответ со списком правил
-@Schema(description = "Ответ со списком правил")
-class RulesListResponseDto {
-    @Schema(description = "Список правил", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull
-    private List<RuleDto> data;
-
-    public RulesListResponseDto() {}
-
-    public RulesListResponseDto(List<RuleDto> data) {
-        this.data = data;
-    }
-
-    public List<RuleDto> getData() { return data; }
-    public void setData(List<RuleDto> data) { this.data = data; }
-}
-
-// Статистика правила DTO
-@Schema(description = "Статистика правила")
-class RuleStatDto {
-    @Schema(description = "ID правила", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull
-    private Long ruleId;
-
-    @Schema(description = "Количество срабатываний", example = "42", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull
-    @Min(value = 0, message = "Количество срабатываний не может быть отрицательным")
-    private Long count;
-
-    @Schema(description = "Последнее срабатывание", example = "2023-01-15T10:30:00")
-    private LocalDateTime lastTriggered;
-
-    public RuleStatDto() {}
-
-    public RuleStatDto(Long ruleId, Long count) {
-        this.ruleId = ruleId;
-        this.count = count;
-    }
-
-    public Long getRuleId() { return ruleId; }
-    public void setRuleId(Long ruleId) { this.ruleId = ruleId; }
-    public Long getCount() { return count; }
-    public void setCount(Long count) { this.count = count; }
-    public LocalDateTime getLastTriggered() { return lastTriggered; }
-    public void setLastTriggered(LocalDateTime lastTriggered) { this.lastTriggered = lastTriggered; }
-}
-
-// Ответ со статистикой
-@Schema(description = "Ответ со статистикой правил")
-class RuleStatsResponseDto {
-    @Schema(description = "Статистика", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull
-    private List<RuleStatDto> stats;
-
-    public RuleStatsResponseDto() {}
-
-    public RuleStatsResponseDto(List<RuleStatDto> stats) {
-        this.stats = stats;
-    }
-
-    public List<RuleStatDto> getStats() { return stats; }
-    public void setStats(List<RuleStatDto> stats) { this.stats = stats; }
-}
-
 // Рекомендация продукта DTO
 @Schema(description = "Рекомендация продукта")
 class ProductRecommendationDto {
+    @Schema(description = "ID рекомендации", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotNull
+    private Long id;
+
     @Schema(description = "ID продукта", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotNull
     private Long productId;
@@ -1085,12 +971,8 @@ class ProductRecommendationDto {
 
     public ProductRecommendationDto() {}
 
-    public ProductRecommendationDto(Long productId, String productName, String recommendationText) {
-        this.productId = productId;
-        this.productName = productName;
-        this.recommendationText = recommendationText;
-    }
-
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
     public Long getProductId() { return productId; }
     public void setProductId(Long productId) { this.productId = productId; }
     public String getProductName() { return productName; }
@@ -1103,107 +985,36 @@ class ProductRecommendationDto {
     public void setViewed(boolean viewed) { this.viewed = viewed; }
 }
 
-// Ответ с рекомендациями
-@Schema(description = "Ответ с рекомендациями")
-class RecommendationsResponseDto {
-    @Schema(description = "Рекомендации", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotNull
-    private List<ProductRecommendationDto> recommendations;
-
-    public RecommendationsResponseDto() {}
-
-    public RecommendationsResponseDto(List<ProductRecommendationDto> recommendations) {
-        this.recommendations = recommendations;
-    }
-
-    public List<ProductRecommendationDto> getRecommendations() { return recommendations; }
-    public void setRecommendations(List<ProductRecommendationDto> recommendations) { this.recommendations = recommendations; }
-}
-
-// Информация о сервисе
-@Schema(description = "Информация о сервисе")
-class ServiceInfoDto {
-    @Schema(description = "Название", example = "recommendation-service", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank
-    private String name;
-
-    @Schema(description = "Версия", example = "1.0.0", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank
-    private String version;
-
-    @Schema(description = "Статус", example = "running")
-    private String status = "running";
-
-    @Schema(description = "Время запуска", example = "2023-01-15T10:30:00")
-    private LocalDateTime startupTime;
-
-    public ServiceInfoDto() {
-        this.startupTime = LocalDateTime.now();
-    }
-
-    public ServiceInfoDto(String name, String version) {
-        this.name = name;
-        this.version = version;
-        this.startupTime = LocalDateTime.now();
-    }
-
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-    public String getVersion() { return version; }
-    public void setVersion(String version) { this.version = version; }
-    public String getStatus() { return status; }
-    public void setStatus(String status) { this.status = status; }
-    public LocalDateTime getStartupTime() { return startupTime; }
-    public void setStartupTime(LocalDateTime startupTime) { this.startupTime = startupTime; }
-}
-
-// ==================== 5. MAPPER ИНТЕРФЕЙСЫ (MapStruct) ====================
+// ==================== 6. MAPPER ИНТЕРФЕЙСЫ ====================
 
 // User Mapper
 @Mapper(componentModel = "spring")
 interface UserMapper {
-    UserMapper INSTANCE = Mappers.getMapper(UserMapper.class);
-
     UserDto toDto(UserEntity entity);
 
     UserEntity toEntity(UserDto dto);
 
-    UserEntity toEntity(UserRequestDto requestDto);
+    UserEntity toEntity(RegisterRequestDto requestDto);
 
     List<UserDto> toDtoList(List<UserEntity> entities);
 
     @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
     void updateEntityFromDto(UserDto dto, @MappingTarget UserEntity entity);
-
-    @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
-    void updateEntityFromRequest(UserRequestDto requestDto, @MappingTarget UserEntity entity);
 }
 
 // Product Mapper
 @Mapper(componentModel = "spring")
 interface ProductMapper {
-    ProductMapper INSTANCE = Mappers.getMapper(ProductMapper.class);
-
     ProductDto toDto(ProductEntity entity);
 
     ProductEntity toEntity(ProductDto dto);
 
-    ProductEntity toEntity(ProductRequestDto requestDto);
-
     List<ProductDto> toDtoList(List<ProductEntity> entities);
-
-    @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
-    void updateEntityFromDto(ProductDto dto, @MappingTarget ProductEntity entity);
-
-    @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
-    void updateEntityFromRequest(ProductRequestDto requestDto, @MappingTarget ProductEntity entity);
 }
 
 // Transaction Mapper
 @Mapper(componentModel = "spring")
 interface TransactionMapper {
-    TransactionMapper INSTANCE = Mappers.getMapper(TransactionMapper.class);
-
     @Mapping(source = "user.id", target = "userId")
     @Mapping(source = "product.id", target = "productId")
     TransactionDto toDto(TransactionEntity entity);
@@ -1212,81 +1023,32 @@ interface TransactionMapper {
     @Mapping(source = "productId", target = "product.id")
     TransactionEntity toEntity(TransactionDto dto);
 
-    @Mapping(source = "userId", target = "user.id")
-    @Mapping(source = "productId", target = "product.id")
-    TransactionEntity toEntity(TransactionRequestDto requestDto);
-
     List<TransactionDto> toDtoList(List<TransactionEntity> entities);
-
-    @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
-    void updateEntityFromDto(TransactionDto dto, @MappingTarget TransactionEntity entity);
 }
 
 // Rule Mapper
 @Mapper(componentModel = "spring")
 interface RuleMapper {
-    RuleMapper INSTANCE = Mappers.getMapper(RuleMapper.class);
-
     @Mapping(source = "product.id", target = "productId")
     RuleDto toDto(RuleEntity entity);
 
     @Mapping(source = "productId", target = "product.id")
     RuleEntity toEntity(RuleDto dto);
 
-    @Mapping(source = "productId", target = "product.id")
-    RuleEntity toEntity(RuleRequestDto requestDto);
-
     List<RuleDto> toDtoList(List<RuleEntity> entities);
-
-    @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
-    void updateEntityFromDto(RuleDto dto, @MappingTarget RuleEntity entity);
-}
-
-// Rule Query Mapper
-@Mapper(componentModel = "spring")
-interface RuleQueryMapper {
-    RuleQueryMapper INSTANCE = Mappers.getMapper(RuleQueryMapper.class);
-
-    RuleQueryDto toDto(RuleQueryEntity entity);
-
-    RuleQueryEntity toEntity(RuleQueryDto dto);
-
-    List<RuleQueryDto> toDtoList(List<RuleQueryEntity> entities);
-
-    List<RuleQueryEntity> toEntityList(List<RuleQueryDto> dtos);
-}
-
-// Rule Statistic Mapper
-@Mapper(componentModel = "spring")
-interface RuleStatisticMapper {
-    RuleStatisticMapper INSTANCE = Mappers.getMapper(RuleStatisticMapper.class);
-
-    @Mapping(source = "rule.id", target = "ruleId")
-    RuleStatDto toDto(RuleStatisticEntity entity);
-
-    @Mapping(source = "ruleId", target = "rule.id")
-    RuleStatisticEntity toEntity(RuleStatDto dto);
-
-    List<RuleStatDto> toDtoList(List<RuleStatisticEntity> entities);
 }
 
 // Recommendation Mapper
 @Mapper(componentModel = "spring")
 interface RecommendationMapper {
-    RecommendationMapper INSTANCE = Mappers.getMapper(RecommendationMapper.class);
-
     @Mapping(source = "product.id", target = "productId")
     @Mapping(source = "product.name", target = "productName")
     ProductRecommendationDto toDto(RecommendationEntity entity);
 
-    @Mapping(source = "productId", target = "product.id")
-    @Mapping(source = "productName", target = "product.name")
-    RecommendationEntity toEntity(ProductRecommendationDto dto);
-
     List<ProductRecommendationDto> toDtoList(List<RecommendationEntity> entities);
 }
 
-// ==================== 6. РЕПОЗИТОРИИ ====================
+// ==================== 7. РЕПОЗИТОРИИ ====================
 
 // User Repository
 @Repository
@@ -1330,19 +1092,11 @@ interface TransactionRepository extends JpaRepository<TransactionEntity, Long> {
 
     List<TransactionEntity> findByUserIdAndType(Long userId, String type);
 
-    List<TransactionEntity> findByUserIdAndTransactionDateBetween(Long userId, LocalDateTime start, LocalDateTime end);
-
     @Query("SELECT SUM(t.amount) FROM TransactionEntity t WHERE t.user.id = :userId AND t.type = :type")
     BigDecimal sumAmountByUserIdAndType(@Param("userId") Long userId, @Param("type") String type);
 
     @Query("SELECT COUNT(t) FROM TransactionEntity t WHERE t.user.id = :userId AND t.product.type = :productType")
     Long countByUserIdAndProductType(@Param("userId") Long userId, @Param("productType") String productType);
-
-    @Query("SELECT SUM(t.amount) FROM TransactionEntity t WHERE t.user.id = :userId AND t.product.type = :productType AND t.type = :transactionType")
-    BigDecimal sumByUserAndProductTypeAndTransactionType(
-            @Param("userId") Long userId,
-            @Param("productType") String productType,
-            @Param("transactionType") String transactionType);
 }
 
 // Rule Repository
@@ -1351,28 +1105,6 @@ interface RuleRepository extends JpaRepository<RuleEntity, Long> {
     List<RuleEntity> findByActiveTrue();
 
     List<RuleEntity> findByProductId(Long productId);
-
-    List<RuleEntity> findByProductIdAndActiveTrue(Long productId);
-}
-
-// Rule Query Repository
-@Repository
-interface RuleQueryRepository extends JpaRepository<RuleQueryEntity, Long> {
-    List<RuleQueryEntity> findByRuleId(Long ruleId);
-
-    void deleteByRuleId(Long ruleId);
-}
-
-// Rule Statistic Repository
-@Repository
-interface RuleStatisticRepository extends JpaRepository<RuleStatisticEntity, Long> {
-    Optional<RuleStatisticEntity> findByRuleId(Long ruleId);
-
-    @Modifying
-    @Query("UPDATE RuleStatisticEntity r SET r.count = r.count + 1, r.lastTriggered = CURRENT_TIMESTAMP WHERE r.rule.id = :ruleId")
-    void incrementCount(@Param("ruleId") Long ruleId);
-
-    void deleteByRuleId(Long ruleId);
 }
 
 // Recommendation Repository
@@ -1391,7 +1123,91 @@ interface RecommendationRepository extends JpaRepository<RecommendationEntity, L
     void markAllAsViewedByUserId(@Param("userId") Long userId);
 }
 
-// ==================== 7. СЕРВИСЫ ====================
+// ==================== 8. СЕРВИСЫ ====================
+
+// Auth Service
+@Service
+@Transactional
+class AuthService {
+    @Autowired
+    private JdbcUserDetailsManager userDetailsManager;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    public void register(RegisterRequestDto requestDto) {
+        if (userDetailsManager.userExists(requestDto.getEmail())) {
+            throw new RuntimeException("Пользователь с таким email уже существует");
+        }
+
+        // Создаем пользователя через JdbcUserDetailsManager
+        UserDetails userDetails = org.springframework.security.core.userdetails.User.builder()
+                .username(requestDto.getEmail())
+                .password(passwordEncoder.encode(requestDto.getPassword()))
+                .roles(requestDto.getRole())
+                .build();
+
+        userDetailsManager.createUser(userDetails);
+
+        // Дополнительно сохраняем в нашу таблицу users
+        UserEntity user = new UserEntity();
+        user.setEmail(requestDto.getEmail());
+        user.setPassword(passwordEncoder.encode(requestDto.getPassword()));
+        user.setFirstName(requestDto.getFirstName());
+        user.setLastName(requestDto.getLastName());
+        user.setPhone(requestDto.getPhone());
+        user.setRole(requestDto.getRole());
+        user.setEnabled(true);
+        user.setActive(true);
+
+        userRepository.save(user);
+    }
+
+    public void changePassword(String email, ChangePasswordRequestDto requestDto) {
+        // Получаем пользователя
+        UserDetails userDetails = userDetailsManager.loadUserByUsername(email);
+
+        // Проверяем текущий пароль
+        if (!passwordEncoder.matches(requestDto.getCurrentPassword(), userDetails.getPassword())) {
+            throw new BadCredentialsException("Текущий пароль неверен");
+        }
+
+        // Меняем пароль
+        userDetailsManager.changePassword(
+                requestDto.getCurrentPassword(),
+                passwordEncoder.encode(requestDto.getNewPassword())
+        );
+
+        // Обновляем пароль в нашей таблице
+        UserEntity user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+        user.setPassword(passwordEncoder.encode(requestDto.getNewPassword()));
+        userRepository.save(user);
+    }
+
+    public UserDto getCurrentUser() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String email = authentication.getName();
+
+        return userRepository.findByEmail(email)
+                .map(user -> {
+                    UserDto dto = new UserDto();
+                    dto.setId(user.getId());
+                    dto.setFirstName(user.getFirstName());
+                    dto.setLastName(user.getLastName());
+                    dto.setEmail(user.getEmail());
+                    dto.setPhone(user.getPhone());
+                    dto.setRole(user.getRole());
+                    dto.setRegistrationDate(user.getRegistrationDate());
+                    dto.setActive(user.isActive());
+                    return dto;
+                })
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+    }
+}
 
 // User Service
 @Service
@@ -1403,15 +1219,11 @@ class UserService {
     @Autowired
     private UserMapper userMapper;
 
-    public UserDto createUser(UserRequestDto requestDto) {
-        // Проверка уникальности email
-        if (userRepository.existsByEmail(requestDto.getEmail())) {
-            throw new RuntimeException("Пользователь с таким email уже существует");
-        }
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
-        UserEntity entity = userMapper.toEntity(requestDto);
-        entity = userRepository.save(entity);
-        return userMapper.toDto(entity);
+    public List<UserDto> getAllUsers() {
+        return userMapper.toDtoList(userRepository.findAll());
     }
 
     public Optional<UserDto> getUserById(Long id) {
@@ -1419,44 +1231,32 @@ class UserService {
                 .map(userMapper::toDto);
     }
 
-    public List<UserDto> getAllUsers() {
-        return userMapper.toDtoList(userRepository.findAll());
-    }
-
-    public List<UserDto> getActiveUsers() {
-        return userMapper.toDtoList(userRepository.findByActiveTrue());
-    }
-
-    public Optional<UserDto> updateUser(Long id, UserRequestDto requestDto) {
+    @PreAuthorize("hasRole('ADMIN') or #id == authentication.principal.id")
+    public Optional<UserDto> updateUser(Long id, UserDto userDto) {
         return userRepository.findById(id)
                 .map(existing -> {
-                    // Проверка уникальности email (кроме текущего пользователя)
-                    if (!existing.getEmail().equals(requestDto.getEmail()) &&
-                            userRepository.existsByEmail(requestDto.getEmail())) {
-                        throw new RuntimeException("Пользователь с таким email уже существует");
+                    // Проверка прав: только ADMIN может менять роль
+                    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+                    boolean isAdmin = auth.getAuthorities().stream()
+                            .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+                    if (!isAdmin && !existing.getRole().equals(userDto.getRole())) {
+                        throw new AccessDeniedException("Только администратор может изменять роль пользователя");
                     }
 
-                    userMapper.updateEntityFromRequest(requestDto, existing);
+                    userMapper.updateEntityFromDto(userDto, existing);
                     UserEntity updated = userRepository.save(existing);
                     return userMapper.toDto(updated);
                 });
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     public boolean deleteUser(Long id) {
         if (userRepository.existsById(id)) {
             userRepository.deleteById(id);
             return true;
         }
         return false;
-    }
-
-    public Optional<UserDto> getUserByEmail(String email) {
-        return userRepository.findByEmail(email)
-                .map(userMapper::toDto);
-    }
-
-    public long countActiveUsers() {
-        return userRepository.countByActiveTrue();
     }
 
     public List<UserDto> searchUsers(String query) {
@@ -1482,24 +1282,13 @@ class ProductService {
     @Autowired
     private ProductMapper productMapper;
 
-    public ProductDto createProduct(ProductRequestDto requestDto) {
-        // Проверка уникальности
-        if (productRepository.existsByNameAndType(requestDto.getName(), requestDto.getType())) {
-            throw new RuntimeException("Продукт с таким названием и типом уже существует");
-        }
-
-        ProductEntity entity = productMapper.toEntity(requestDto);
-        entity = productRepository.save(entity);
-        return productMapper.toDto(entity);
+    public List<ProductDto> getAllProducts() {
+        return productMapper.toDtoList(productRepository.findAll());
     }
 
     public Optional<ProductDto> getProductById(Long id) {
         return productRepository.findById(id)
                 .map(productMapper::toDto);
-    }
-
-    public List<ProductDto> getAllProducts() {
-        return productMapper.toDtoList(productRepository.findAll());
     }
 
     public List<ProductDto> getActiveProducts() {
@@ -1510,38 +1299,29 @@ class ProductService {
         return productMapper.toDtoList(productRepository.findByTypeAndActiveTrue(type));
     }
 
-    public Optional<ProductDto> updateProduct(Long id, ProductRequestDto requestDto) {
+    public ProductDto createProduct(ProductDto productDto) {
+        ProductEntity entity = productMapper.toEntity(productDto);
+        entity = productRepository.save(entity);
+        return productMapper.toDto(entity);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    public Optional<ProductDto> updateProduct(Long id, ProductDto productDto) {
         return productRepository.findById(id)
                 .map(existing -> {
-                    // Проверка уникальности (кроме текущего продукта)
-                    if ((!existing.getName().equals(requestDto.getName()) ||
-                            !existing.getType().equals(requestDto.getType())) &&
-                            productRepository.existsByNameAndType(requestDto.getName(), requestDto.getType())) {
-                        throw new RuntimeException("Продукт с таким названием и типом уже существует");
-                    }
-
-                    productMapper.updateEntityFromRequest(requestDto, existing);
+                    productMapper.toDto(existing); // Для обновления нужно отдельное отображение
                     ProductEntity updated = productRepository.save(existing);
                     return productMapper.toDto(updated);
                 });
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     public boolean deleteProduct(Long id) {
         if (productRepository.existsById(id)) {
             productRepository.deleteById(id);
             return true;
         }
         return false;
-    }
-
-    public List<ProductDto> searchProducts(String query) {
-        if (query == null || query.trim().isEmpty()) {
-            return getAllProducts();
-        }
-
-        String searchQuery = query.trim();
-        List<ProductEntity> results = productRepository.findByNameContainingIgnoreCase(searchQuery);
-        return productMapper.toDtoList(results);
     }
 }
 
@@ -1561,15 +1341,30 @@ class TransactionService {
     @Autowired
     private TransactionMapper transactionMapper;
 
-    public TransactionDto createTransaction(TransactionRequestDto requestDto) {
-        // Проверка существования пользователя и продукта
-        UserEntity user = userRepository.findById(requestDto.getUserId())
+    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    public TransactionDto createTransaction(TransactionDto transactionDto) {
+        // Проверка прав: пользователь может создавать транзакции только для себя
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        // Проверяем, что пользователь создает транзакцию для себя
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !currentUser.getId().equals(transactionDto.getUserId())) {
+            throw new AccessDeniedException("Вы можете создавать транзакции только для себя");
+        }
+
+        UserEntity user = userRepository.findById(transactionDto.getUserId())
                 .orElseThrow(() -> new RuntimeException("Пользователь не найден"));
 
-        ProductEntity product = productRepository.findById(requestDto.getProductId())
+        ProductEntity product = productRepository.findById(transactionDto.getProductId())
                 .orElseThrow(() -> new RuntimeException("Продукт не найден"));
 
-        TransactionEntity entity = transactionMapper.toEntity(requestDto);
+        TransactionEntity entity = transactionMapper.toEntity(transactionDto);
         entity.setUser(user);
         entity.setProduct(product);
 
@@ -1577,21 +1372,28 @@ class TransactionService {
         return transactionMapper.toDto(entity);
     }
 
-    public Optional<TransactionDto> getTransactionById(Long id) {
-        return transactionRepository.findById(id)
-                .map(transactionMapper::toDto);
-    }
-
-    public List<TransactionDto> getAllTransactions() {
-        return transactionMapper.toDtoList(transactionRepository.findAll());
-    }
-
+    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
     public List<TransactionDto> getUserTransactions(Long userId) {
+        // Проверка прав: пользователь может видеть только свои транзакции
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !currentUser.getId().equals(userId)) {
+            throw new AccessDeniedException("Вы можете просматривать только свои транзакции");
+        }
+
         return transactionMapper.toDtoList(transactionRepository.findByUserId(userId));
     }
 
-    public List<TransactionDto> getProductTransactions(Long productId) {
-        return transactionMapper.toDtoList(transactionRepository.findByProductId(productId));
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<TransactionDto> getAllTransactions() {
+        return transactionMapper.toDtoList(transactionRepository.findAll());
     }
 
     public BigDecimal getUserTransactionSum(Long userId, String type) {
@@ -1599,18 +1401,21 @@ class TransactionService {
         return sum != null ? sum : BigDecimal.ZERO;
     }
 
-    public Long countUserTransactionsByProductType(Long userId, String productType) {
-        Long count = transactionRepository.countByUserIdAndProductType(userId, productType);
-        return count != null ? count : 0L;
-    }
-
-    public BigDecimal sumTransactionsByType(Long userId, String productType, String transactionType) {
-        BigDecimal sum = transactionRepository.sumByUserAndProductTypeAndTransactionType(
-                userId, productType, transactionType);
-        return sum != null ? sum : BigDecimal.ZERO;
-    }
-
     public Map<String, Object> getUserTransactionSummary(Long userId) {
+        // Проверка прав
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !currentUser.getId().equals(userId)) {
+            throw new AccessDeniedException("Вы можете просматривать только свою статистику");
+        }
+
         BigDecimal totalDeposits = getUserTransactionSum(userId, "DEPOSIT");
         BigDecimal totalWithdrawals = getUserTransactionSum(userId, "WITHDRAW");
         BigDecimal balance = totalDeposits.subtract(totalWithdrawals);
@@ -1637,81 +1442,577 @@ class RuleService {
     private RuleRepository ruleRepository;
 
     @Autowired
-    private RuleQueryRepository ruleQueryRepository;
-
-    @Autowired
-    private RuleStatisticRepository ruleStatisticRepository;
-
-    @Autowired
     private ProductRepository productRepository;
 
     @Autowired
     private RuleMapper ruleMapper;
 
-    @Autowired
-    private RuleQueryMapper ruleQueryMapper;
-
-    @Autowired
-    private RuleStatisticMapper ruleStatisticMapper;
-
-    public RuleDto createRule(RuleRequestDto requestDto) {
-        // Проверка существования продукта
-        ProductEntity product = productRepository.findById(requestDto.getProductId())
+    @PreAuthorize("hasRole('ADMIN')")
+    public RuleDto createRule(RuleDto ruleDto) {
+        ProductEntity product = productRepository.findById(ruleDto.getProductId())
                 .orElseThrow(() -> new RuntimeException("Продукт не найден"));
 
-        RuleEntity entity = ruleMapper.toEntity(requestDto);
+        RuleEntity entity = ruleMapper.toEntity(ruleDto);
         entity.setProduct(product);
 
-        // Сохраняем правило
         entity = ruleRepository.save(entity);
-
-        // Сохраняем запросы правила
-        if (requestDto.getRule() != null) {
-            List<RuleQueryEntity> queries = ruleQueryMapper.toEntityList(requestDto.getRule());
-            queries.forEach(query -> query.setRule(entity));
-            ruleQueryRepository.saveAll(queries);
-            entity.setQueries(queries);
-        }
-
-        // Создаем статистику для правила
-        RuleStatisticEntity statistic = new RuleStatisticEntity();
-        statistic.setRule(entity);
-        statistic.setCount(0L);
-        ruleStatisticRepository.save(statistic);
-
         return ruleMapper.toDto(entity);
     }
 
-    public Optional<RuleDto> getRuleById(Long id) {
-        return ruleRepository.findById(id)
-                .map(rule -> {
-                    RuleDto dto = ruleMapper.toDto(rule);
-                    // Загружаем запросы
-                    List<RuleQueryEntity> queries = ruleQueryRepository.findByRuleId(id);
-                    List<RuleQueryDto> queryDtos = ruleQueryMapper.toDtoList(queries);
-                    dto.setRule(queryDtos);
-                    return dto;
-                });
-    }
-
     public List<RuleDto> getAllRules() {
-        List<RuleEntity> rules = ruleRepository.findAll();
-        return rules.stream()
-                .map(rule -> {
-                    RuleDto dto = ruleMapper.toDto(rule);
-                    List<RuleQueryEntity> queries = ruleQueryRepository.findByRuleId(rule.getId());
-                    List<RuleQueryDto> queryDtos = ruleQueryMapper.toDtoList(queries);
-                    dto.setRule(queryDtos);
-                    return dto;
-                })
-                .collect(Collectors.toList());
+        return ruleMapper.toDtoList(ruleRepository.findAll());
     }
 
     public List<RuleDto> getActiveRules() {
         return ruleMapper.toDtoList(ruleRepository.findByActiveTrue());
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
+    public Optional<RuleDto> updateRule(Long id, RuleDto ruleDto) {
+        return ruleRepository.findById(id)
+                .map(existing -> {
+                    ProductEntity product = productRepository.findById(ruleDto.getProductId())
+                            .orElseThrow(() -> new RuntimeException("Продукт не найден"));
+
+                    existing.setProductName(ruleDto.getProductName());
+                    existing.setProduct(product);
+                    existing.setProductText(ruleDto.getProductText());
+                    existing.setActive(ruleDto.isActive());
+
+                    RuleEntity updated = ruleRepository.save(existing);
+                    return ruleMapper.toDto(updated);
+                });
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
     public boolean deleteRule(Long id) {
         if (ruleRepository.existsById(id)) {
-            // Удаляем запросы и статистику перед удалением правила
-            ruleQueryRepository.deleteByRuleId(id);
+            ruleRepository.deleteById(id);
+            return true;
+        }
+        return false;
+    }
+}
+
+// Recommendation Service
+@Service
+@Transactional
+class RecommendationService {
+    @Autowired
+    private RecommendationRepository recommendationRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    @Autowired
+    private TransactionRepository transactionRepository;
+
+    @Autowired
+    private RuleRepository ruleRepository;
+
+    @Autowired
+    private RecommendationMapper recommendationMapper;
+
+    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    public List<ProductRecommendationDto> getUserRecommendations(Long userId) {
+        // Проверка прав
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !currentUser.getId().equals(userId)) {
+            throw new AccessDeniedException("Вы можете просматривать только свои рекомендации");
+        }
+
+        List<RecommendationEntity> recommendations = recommendationRepository.findByUserId(userId);
+        return recommendationMapper.toDtoList(recommendations);
+    }
+
+    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    public List<ProductRecommendationDto> getNewRecommendations(Long userId) {
+        // Проверка прав (аналогично getUserRecommendations)
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !currentUser.getId().equals(userId)) {
+            throw new AccessDeniedException("Вы можете просматривать только свои рекомендации");
+        }
+
+        List<RecommendationEntity> recommendations = recommendationRepository.findByUserIdAndViewedFalse(userId);
+        return recommendationMapper.toDtoList(recommendations);
+    }
+
+    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    public void markAsViewed(Long recommendationId) {
+        RecommendationEntity recommendation = recommendationRepository.findById(recommendationId)
+                .orElseThrow(() -> new RuntimeException("Рекомендация не найдена"));
+
+        // Проверка прав
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !recommendation.getUser().getId().equals(currentUser.getId())) {
+            throw new AccessDeniedException("Вы можете отмечать только свои рекомендации");
+        }
+
+        recommendation.setViewed(true);
+        recommendationRepository.save(recommendation);
+    }
+
+    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    public void markAllAsViewed(Long userId) {
+        // Проверка прав
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String currentUsername = auth.getName();
+
+        UserEntity currentUser = userRepository.findByEmail(currentUsername)
+                .orElseThrow(() -> new UsernameNotFoundException("Пользователь не найден"));
+
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin && !currentUser.getId().equals(userId)) {
+            throw new AccessDeniedException("Вы можете отмечать только свои рекомендации");
+        }
+
+        recommendationRepository.markAllAsViewedByUserId(userId);
+    }
+
+    // Метод для генерации рекомендаций на основе правил
+    public void generateRecommendationsForUser(Long userId) {
+        UserEntity user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("Пользователь не найден"));
+
+        List<RuleEntity> activeRules = ruleRepository.findByActiveTrue();
+
+        for (RuleEntity rule : activeRules) {
+            // Проверяем условия правила (упрощенная логика)
+            boolean shouldRecommend = checkRuleConditions(user, rule);
+
+            if (shouldRecommend) {
+                // Проверяем, не рекомендовали ли уже этот продукт
+                boolean alreadyRecommended = recommendationRepository
+                        .findByUserIdAndProductId(userId, rule.getProduct().getId())
+                        .stream()
+                        .anyMatch(r -> !r.isViewed());
+
+                if (!alreadyRecommended) {
+                    RecommendationEntity recommendation = new RecommendationEntity();
+                    recommendation.setUser(user);
+                    recommendation.setProduct(rule.getProduct());
+                    recommendation.setRecommendationText(rule.getProductText());
+                    recommendation.setViewed(false);
+
+                    recommendationRepository.save(recommendation);
+                }
+            }
+        }
+    }
+
+    private boolean checkRuleConditions(UserEntity user, RuleEntity rule) {
+        // Упрощенная логика проверки условий правила
+        // В реальном приложении здесь была бы сложная логика анализа транзакций
+
+        // Пример: если у пользователя есть транзакции по кредитным продуктам
+        Long creditTransactionsCount = transactionRepository
+                .countByUserIdAndProductType(user.getId(), "CREDIT");
+
+        return creditTransactionsCount > 0;
+    }
+}
+
+// ==================== 9. КОНТРОЛЛЕРЫ ====================
+
+// Auth Controller
+@RestController
+@RequestMapping(AppConstants.API_PREFIX + "/auth")
+@Tag(name = "Аутентификация", description = "API для регистрации и аутентификации")
+class AuthController {
+    @Autowired
+    private AuthService authService;
+
+    @PostMapping("/register")
+    @Operation(summary = "Регистрация нового пользователя")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Пользователь успешно зарегистрирован"),
+            @ApiResponse(responseCode = "400", description = "Некорректные данные"),
+            @ApiResponse(responseCode = "409", description = "Пользователь уже существует")
+    })
+    public ResponseEntity<DataResponseDto<Void>> register(@Valid @RequestBody RegisterRequestDto requestDto) {
+        authService.register(requestDto);
+        return ResponseEntity.ok(new DataResponseDto<>(null, "Пользователь успешно зарегистрирован"));
+    }
+
+    @PostMapping("/change-password")
+    @Operation(summary = "Смена пароля")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Пароль успешно изменен"),
+            @ApiResponse(responseCode = "400", description = "Некорректные данные"),
+            @ApiResponse(responseCode = "401", description = "Неверный текущий пароль")
+    })
+    public ResponseEntity<DataResponseDto<Void>> changePassword(
+            @Valid @RequestBody ChangePasswordRequestDto requestDto,
+            Authentication authentication) {
+        authService.changePassword(authentication.getName(), requestDto);
+        return ResponseEntity.ok(new DataResponseDto<>(null, "Пароль успешно изменен"));
+    }
+
+    @GetMapping("/me")
+    @Operation(summary = "Получить информацию о текущем пользователе")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Информация о пользователе"),
+            @ApiResponse(responseCode = "401", description = "Пользователь не аутентифицирован")
+    })
+    public ResponseEntity<DataResponseDto<UserDto>> getCurrentUser() {
+        UserDto userDto = authService.getCurrentUser();
+        return ResponseEntity.ok(new DataResponseDto<>(userDto));
+    }
+}
+
+// User Controller
+@RestController
+@RequestMapping(AppConstants.API_PREFIX + "/users")
+@Tag(name = "Пользователи", description = "API для управления пользователями")
+class UserController {
+    @Autowired
+    private UserService userService;
+
+    @GetMapping
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Получить всех пользователей")
+    public ResponseEntity<DataResponseDto<List<UserDto>>> getAllUsers() {
+        List<UserDto> users = userService.getAllUsers();
+        return ResponseEntity.ok(new DataResponseDto<>(users));
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Получить пользователя по ID")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Пользователь найден"),
+            @ApiResponse(responseCode = "404", description = "Пользователь не найден")
+    })
+    public ResponseEntity<DataResponseDto<UserDto>> getUserById(@PathVariable Long id) {
+        return userService.getUserById(id)
+                .map(user -> ResponseEntity.ok(new DataResponseDto<>(user)))
+                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new DataResponseDto<>(null, "Пользователь не найден")));
+    }
+
+    @PutMapping("/{id}")
+    @Operation(summary = "Обновить пользователя")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Пользователь обновлен"),
+            @ApiResponse(responseCode = "403", description = "Доступ запрещен"),
+            @ApiResponse(responseCode = "404", description = "Пользователь не найден")
+    })
+    public ResponseEntity<DataResponseDto<UserDto>> updateUser(
+            @PathVariable Long id,
+            @Valid @RequestBody UserDto userDto) {
+        return userService.updateUser(id, userDto)
+                .map(user -> ResponseEntity.ok(new DataResponseDto<>(user, "Пользователь обновлен")))
+                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new DataResponseDto<>(null, "Пользователь не найден")));
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Удалить пользователя")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Пользователь удален"),
+            @ApiResponse(responseCode = "404", description = "Пользователь не найден")
+    })
+    public ResponseEntity<DataResponseDto<Void>> deleteUser(@PathVariable Long id) {
+        boolean deleted = userService.deleteUser(id);
+        if (deleted) {
+            return ResponseEntity.ok(new DataResponseDto<>(null, "Пользователь удален"));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new DataResponseDto<>(null, "Пользователь не найден"));
+        }
+    }
+
+    @GetMapping("/search")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Поиск пользователей")
+    public ResponseEntity<DataResponseDto<List<UserDto>>> searchUsers(
+            @RequestParam(required = false) String query) {
+        List<UserDto> users = userService.searchUsers(query);
+        return ResponseEntity.ok(new DataResponseDto<>(users));
+    }
+}
+
+// Product Controller
+@RestController
+@RequestMapping(AppConstants.API_PREFIX + "/products")
+@Tag(name = "Продукты", description = "API для управления продуктами")
+class ProductController {
+    @Autowired
+    private ProductService productService;
+
+    @GetMapping
+    @Operation(summary = "Получить все продукты")
+    public ResponseEntity<DataResponseDto<List<ProductDto>>> getAllProducts() {
+        List<ProductDto> products = productService.getAllProducts();
+        return ResponseEntity.ok(new DataResponseDto<>(products));
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Получить продукт по ID")
+    public ResponseEntity<DataResponseDto<ProductDto>> getProductById(@PathVariable Long id) {
+        return productService.getProductById(id)
+                .map(product -> ResponseEntity.ok(new DataResponseDto<>(product)))
+                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new DataResponseDto<>(null, "Продукт не найден")));
+    }
+
+    @GetMapping("/active")
+    @Operation(summary = "Получить активные продукты")
+    public ResponseEntity<DataResponseDto<List<ProductDto>>> getActiveProducts() {
+        List<ProductDto> products = productService.getActiveProducts();
+        return ResponseEntity.ok(new DataResponseDto<>(products));
+    }
+
+    @GetMapping("/type/{type}")
+    @Operation(summary = "Получить продукты по типу")
+    public ResponseEntity<DataResponseDto<List<ProductDto>>> getProductsByType(@PathVariable String type) {
+        List<ProductDto> products = productService.getProductsByType(type);
+        return ResponseEntity.ok(new DataResponseDto<>(products));
+    }
+
+    @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Создать новый продукт")
+    public ResponseEntity<DataResponseDto<ProductDto>> createProduct(@Valid @RequestBody ProductDto productDto) {
+        ProductDto created = productService.createProduct(productDto);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(new DataResponseDto<>(created, "Продукт создан"));
+    }
+
+    @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Обновить продукт")
+    public ResponseEntity<DataResponseDto<ProductDto>> updateProduct(
+            @PathVariable Long id,
+            @Valid @RequestBody ProductDto productDto) {
+        return productService.updateProduct(id, productDto)
+                .map(product -> ResponseEntity.ok(new DataResponseDto<>(product, "Продукт обновлен")))
+                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new DataResponseDto<>(null, "Продукт не найден")));
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Удалить продукт")
+    public ResponseEntity<DataResponseDto<Void>> deleteProduct(@PathVariable Long id) {
+        boolean deleted = productService.deleteProduct(id);
+        if (deleted) {
+            return ResponseEntity.ok(new DataResponseDto<>(null, "Продукт удален"));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new DataResponseDto<>(null, "Продукт не найден"));
+        }
+    }
+}
+
+// Transaction Controller
+@RestController
+@RequestMapping(AppConstants.API_PREFIX + "/transactions")
+@Tag(name = "Транзакции", description = "API для управления транзакциями")
+class TransactionController {
+    @Autowired
+    private TransactionService transactionService;
+
+    @PostMapping
+    @Operation(summary = "Создать новую транзакцию")
+    public ResponseEntity<DataResponseDto<TransactionDto>> createTransaction(
+            @Valid @RequestBody TransactionDto transactionDto) {
+        TransactionDto created = transactionService.createTransaction(transactionDto);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(new DataResponseDto<>(created, "Транзакция создана"));
+    }
+
+    @GetMapping("/user/{userId}")
+    @Operation(summary = "Получить транзакции пользователя")
+    public ResponseEntity<DataResponseDto<List<TransactionDto>>> getUserTransactions(@PathVariable Long userId) {
+        List<TransactionDto> transactions = transactionService.getUserTransactions(userId);
+        return ResponseEntity.ok(new DataResponseDto<>(transactions));
+    }
+
+    @GetMapping
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Получить все транзакции")
+    public ResponseEntity<DataResponseDto<List<TransactionDto>>> getAllTransactions() {
+        List<TransactionDto> transactions = transactionService.getAllTransactions();
+        return ResponseEntity.ok(new DataResponseDto<>(transactions));
+    }
+
+    @GetMapping("/user/{userId}/summary")
+    @Operation(summary = "Получить сводку по транзакциям пользователя")
+    public ResponseEntity<DataResponseDto<Map<String, Object>>> getUserTransactionSummary(@PathVariable Long userId) {
+        Map<String, Object> summary = transactionService.getUserTransactionSummary(userId);
+        return ResponseEntity.ok(new DataResponseDto<>(summary));
+    }
+}
+
+// Rule Controller
+@RestController
+@RequestMapping(AppConstants.API_PREFIX + "/rules")
+@Tag(name = "Правила", description = "API для управления правилами рекомендаций")
+class RuleController {
+    @Autowired
+    private RuleService ruleService;
+
+    @GetMapping
+    @Operation(summary = "Получить все правила")
+    public ResponseEntity<DataResponseDto<List<RuleDto>>> getAllRules() {
+        List<RuleDto> rules = ruleService.getAllRules();
+        return ResponseEntity.ok(new DataResponseDto<>(rules));
+    }
+
+    @GetMapping("/active")
+    @Operation(summary = "Получить активные правила")
+    public ResponseEntity<DataResponseDto<List<RuleDto>>> getActiveRules() {
+        List<RuleDto> rules = ruleService.getActiveRules();
+        return ResponseEntity.ok(new DataResponseDto<>(rules));
+    }
+
+    @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Создать новое правило")
+    public ResponseEntity<DataResponseDto<RuleDto>> createRule(@Valid @RequestBody RuleDto ruleDto) {
+        RuleDto created = ruleService.createRule(ruleDto);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(new DataResponseDto<>(created, "Правило создано"));
+    }
+
+    @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Обновить правило")
+    public ResponseEntity<DataResponseDto<RuleDto>> updateRule(
+            @PathVariable Long id,
+            @Valid @RequestBody RuleDto ruleDto) {
+        return ruleService.updateRule(id, ruleDto)
+                .map(rule -> ResponseEntity.ok(new DataResponseDto<>(rule, "Правило обновлено")))
+                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new DataResponseDto<>(null, "Правило не найдено")));
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Удалить правило")
+    public ResponseEntity<DataResponseDto<Void>> deleteRule(@PathVariable Long id) {
+        boolean deleted = ruleService.deleteRule(id);
+        if (deleted) {
+            return ResponseEntity.ok(new DataResponseDto<>(null, "Правило удалено"));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new DataResponseDto<>(null, "Правило не найдено"));
+        }
+    }
+}
+
+// Recommendation Controller
+@RestController
+@RequestMapping(AppConstants.API_PREFIX + "/recommendations")
+@Tag(name = "Рекомендации", description = "API для управления рекомендациями")
+class RecommendationController {
+    @Autowired
+    private RecommendationService recommendationService;
+
+    @GetMapping("/user/{userId}")
+    @Operation(summary = "Получить рекомендации пользователя")
+    public ResponseEntity<DataResponseDto<List<ProductRecommendationDto>>> getUserRecommendations(
+            @PathVariable Long userId) {
+        List<ProductRecommendationDto> recommendations = recommendationService.getUserRecommendations(userId);
+        return ResponseEntity.ok(new DataResponseDto<>(recommendations));
+    }
+
+    @GetMapping("/user/{userId}/new")
+    @Operation(summary = "Получить новые рекомендации пользователя")
+    public ResponseEntity<DataResponseDto<List<ProductRecommendationDto>>> getNewRecommendations(
+            @PathVariable Long userId) {
+        List<ProductRecommendationDto> recommendations = recommendationService.getNewRecommendations(userId);
+        return ResponseEntity.ok(new DataResponseDto<>(recommendations));
+    }
+
+    @PostMapping("/{id}/view")
+    @Operation(summary = "Отметить рекомендацию как просмотренную")
+    public ResponseEntity<DataResponseDto<Void>> markAsViewed(@PathVariable Long id) {
+        recommendationService.markAsViewed(id);
+        return ResponseEntity.ok(new DataResponseDto<>(null, "Рекомендация отмечена как просмотренная"));
+    }
+
+    @PostMapping("/user/{userId}/view-all")
+    @Operation(summary = "Отметить все рекомендации как просмотренные")
+    public ResponseEntity<DataResponseDto<Void>> markAllAsViewed(@PathVariable Long userId) {
+        recommendationService.markAllAsViewed(userId);
+        return ResponseEntity.ok(new DataResponseDto<>(null, "Все рекомендации отмечены как просмотренные"));
+    }
+}
+
+// ==================== 10. ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ИСКЛЮЧЕНИЙ ====================
+
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.validation.FieldError;
+
+@ControllerAdvice
+class GlobalExceptionHandler {
+
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<ErrorResponseDto> handleBadCredentialsException(BadCredentialsException ex) {
+        ErrorResponseDto error = new ErrorResponseDto("Неверные учетные данные", 401);
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponseDto> handleAccessDeniedException(AccessDeniedException ex) {
+        ErrorResponseDto error = new ErrorResponseDto("Доступ запрещен", 403);
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
+    }
+
+    @ExceptionHandler(UsernameNotFoundException.class)
+    public ResponseEntity<ErrorResponseDto> handleUsernameNotFoundException(UsernameNotFoundException ex) {
+        ErrorResponseDto error = new ErrorResponseDto("Пользователь не найден", 404);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponseDto> handleValidationExceptions(MethodArgumentNotValidException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getAllErrors().forEach((error) -> {
+            String fieldName = ((FieldError) error).getField();
+            String errorMessage = error.getDefaultMessage();
+            errors.put(fieldName, errorMessage);
+        });
+
+        ErrorResponseDto error = new ErrorResponseDto("Ошибка валидации", 400);
+        error.setDetails(errors);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(RuntimeException.class)
+    public ResponseEntity<ErrorResponseDto> handleRuntimeException(RuntimeException ex) {
+        ErrorResponseDto error = new ErrorResponseDto(ex.getMessage(), 500);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+    }
+}
