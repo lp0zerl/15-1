@@ -335,7 +335,6 @@ class RuleStatisticEntity {
     void deleteByRuleId(@Param("ruleId") Long ruleId);
 }
 
-// ==================== 5. DTO CLASSES ====================
 class DynamicRuleRequest {
     private String product_name; private UUID product_id; private String product_text; private List<RuleQueryDto> rule;
     public String getProduct_name() { return product_name; } public void setProduct_name(String product_name) { this.product_name = product_name; }
