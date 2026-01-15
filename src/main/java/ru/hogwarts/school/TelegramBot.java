@@ -1,5 +1,7 @@
 package ru.hogwarts.school;
 
+import service.UserRecommendationService;
+
 @Component class TelegramBot extends TelegramLongPollingBot {
     private final String botToken = "test_bot_token"; private final String botUsername = "test_recommendation_bot";
     private final UserRecommendationService userRecommendationService;
